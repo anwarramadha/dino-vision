@@ -44,10 +44,30 @@ class ObstacleTrack:
 
 class ObstaclePolicy:
     def __init__(self, settings: dict[str, float]) -> None:
+        self.decision_mode = settings.get("decision_mode", "predictive")
+        if self.decision_mode not in {"predictive", "direct_distance"}:
+            raise ValueError("policy.decision_mode harus predictive atau direct_distance.")
+        self.direct_distance_ratio = settings.get("direct_distance_ratio", 0.08)
+        if not 0 < self.direct_distance_ratio <= 1:
+            raise ValueError("policy.direct_distance_ratio harus lebih dari 0 dan paling besar 1.")
+        self.direct_cluster_distance_ratio = settings.get("direct_cluster_distance_ratio", 0.08)
+        if not 0 <= self.direct_cluster_distance_ratio <= 1:
+            raise ValueError(
+                "policy.direct_cluster_distance_ratio harus berada di antara 0 dan 1."
+            )
+        self.direct_speed_seconds = settings.get("direct_speed_seconds", 0.20)
+        if self.direct_speed_seconds < 0:
+            raise ValueError("policy.direct_speed_seconds tidak boleh negatif.")
         self.jump_ttc_seconds = settings.get("jump_ttc_seconds", 0.35)
         self.duck_ttc_seconds = settings.get("duck_ttc_seconds", 0.28)
         self.emergency_distance_ratio = settings.get("emergency_distance_ratio", 0.06)
+        self.high_bird_ratio = settings.get("high_bird_ratio", 0.30)
         self.low_bird_ratio = settings.get("low_bird_ratio", 0.45)
+        if not 0 <= self.high_bird_ratio < self.low_bird_ratio <= 1:
+            raise ValueError(
+                "policy.high_bird_ratio harus lebih kecil dari policy.low_bird_ratio, "
+                "dan keduanya berada di antara 0 dan 1."
+            )
         self.cactus_size_ttc_reduction = settings.get("cactus_size_ttc_reduction", 0.30)
         self.cactus_reference_height_ratio = settings.get("cactus_reference_height_ratio", 0.20)
         self.cactus_reference_width_ratio = settings.get("cactus_reference_width_ratio", 0.12)
@@ -83,7 +103,17 @@ class ObstaclePolicy:
         decision_at: float,
     ) -> Action | None:
         self._clear_diagnostics()
-        obstacles = [item for item in detections if item.label in {"cactus", "bird"}]
+        obstacles = [
+            item
+            for item in detections
+            if item.label in {"cactus", "bird"} and not self._is_high_bird(item, frame_height)
+        ]
+        if self.decision_mode == "direct_distance":
+            self._update_tracks(obstacles, observed_at)
+            unhandled = [track for track in self.tracks.values() if not track.handled]
+            return self._choose_by_distance(
+                unhandled, frame_width, frame_height, observed_at, decision_at
+            )
         self._update_tracks(obstacles, observed_at)
         unhandled = [track for track in self.tracks.values() if not track.handled]
         if not unhandled:
@@ -107,7 +137,78 @@ class ObstaclePolicy:
             if metrics["predicted_left"] <= emergency_distance
             else "latency-compensated-ttc"
         )
-        return Action("duck" if metrics["is_low_bird"] else "jump", track.track_id)
+        return Action("duck" if metrics["is_duck_bird"] else "jump", track.track_id)
+
+    def _choose_by_distance(
+        self,
+        tracks: list[ObstacleTrack],
+        frame_width: int,
+        frame_height: int,
+        observed_at: float,
+        decision_at: float,
+    ) -> Action | None:
+        """Pilih aksi dari jarak saat ini dengan ambang yang mengikuti kecepatan."""
+        if not tracks:
+            return None
+        track, threshold, clustered = self._select_direct_obstacle(
+            tracks, frame_width, observed_at, decision_at
+        )
+        assert track.detection is not None
+        obstacle = track.detection
+        self.predicted_left = obstacle.left
+        self.ttc_limit_seconds = threshold
+        self.clustered = clustered
+        self.selected_track_id = track.track_id
+        self.speed_px_s = track.speed_px_s
+        self.raw_ttc_seconds = obstacle.left / track.speed_px_s if track.speed_px_s > 0 else None
+        self.trigger_reason = "direct-distance"
+        is_duck_bird = (
+            obstacle.label == "bird"
+            and frame_height * self.high_bird_ratio
+            <= obstacle.center_y
+            < frame_height * self.low_bird_ratio
+        )
+        if obstacle.left > threshold:
+            return None
+        return Action("duck" if is_duck_bird else "jump", track.track_id)
+
+    def _select_direct_obstacle(
+        self,
+        tracks: list[ObstacleTrack],
+        frame_width: int,
+        observed_at: float,
+        decision_at: float,
+    ) -> tuple[ObstacleTrack, float, bool]:
+        """Pilih rintangan memakai jarak dasar, kecepatan, dan kepadatan cluster."""
+        base_threshold = frame_width * self.direct_distance_ratio
+        cluster_gap = frame_width * self.obstacle_cluster_gap_ratio
+        max_bonus = frame_width * self.direct_cluster_distance_ratio
+        decision_delay = max(0.0, decision_at - observed_at) + self.input_latency_seconds
+        scored: list[tuple[ObstacleTrack, float, bool]] = []
+        for track in sorted(tracks, key=lambda item: item.left):
+            speed_bonus = track.speed_px_s * (self.direct_speed_seconds + decision_delay)
+            follower_gaps = [
+                other.left - track.left
+                for other in tracks
+                if 0 < other.left - track.left <= cluster_gap
+            ]
+            if follower_gaps:
+                closest_gap = min(follower_gaps)
+                proximity = 1 - closest_gap / cluster_gap
+                threshold = base_threshold + speed_bonus + max_bonus * proximity
+                scored.append((track, threshold, True))
+            else:
+                scored.append((track, base_threshold + speed_bonus, False))
+
+        actionable = [item for item in scored if item[0].left <= item[1]]
+        return min(actionable or scored, key=lambda item: item[0].left)
+
+    def _is_high_bird(self, detection: Detection, frame_height: int) -> bool:
+        """Burung tinggi dapat dilewati Dino, sehingga tidak memerlukan aksi."""
+        return (
+            detection.label == "bird"
+            and detection.center_y < frame_height * self.high_bird_ratio
+        )
 
     def mark_action_sent(self, track_id: int) -> None:
         if track_id in self.tracks:
@@ -182,12 +283,14 @@ class ObstaclePolicy:
         raw_ttc = track.left / track.speed_px_s if track.speed_px_s > 0 else None
         effective_ttc = raw_ttc - observation_age if raw_ttc is not None else None
         predicted_left = max(0.0, track.left - track.speed_px_s * observation_age)
-        is_low_bird = (
+        is_duck_bird = (
             track.label == "bird"
-            and track.detection.center_y >= frame_height * self.low_bird_ratio
+            and frame_height * self.high_bird_ratio
+            <= track.detection.center_y
+            < frame_height * self.low_bird_ratio
         )
         size_score = 0.0
-        ttc_limit = self.duck_ttc_seconds if is_low_bird else self.jump_ttc_seconds
+        ttc_limit = self.duck_ttc_seconds if is_duck_bird else self.jump_ttc_seconds
         if track.label == "cactus":
             height_score = track.detection.height / (frame_height * self.cactus_reference_height_ratio)
             width_score = track.detection.width / (frame_width * self.cactus_reference_width_ratio)
@@ -197,7 +300,7 @@ class ObstaclePolicy:
             "raw_ttc": raw_ttc,
             "effective_ttc": effective_ttc,
             "predicted_left": predicted_left,
-            "is_low_bird": is_low_bird,
+            "is_duck_bird": is_duck_bird,
             "size_score": size_score,
             "ttc_limit": ttc_limit,
             "clustered": False,

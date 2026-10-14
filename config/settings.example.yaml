@@ -29,7 +29,15 @@ policy:
   jump_ttc_seconds: 0.32
   duck_ttc_seconds: 0.28
   emergency_distance_ratio: 0.06
+  # Birds above this height can be passed underneath; middle birds duck, low birds jump.
+  high_bird_ratio: 0.30
   low_bird_ratio: 0.45
+  # Minimum jump distance in direct-distance mode; speed and clusters add to it.
+  direct_distance_ratio: 0.08
+  # Direct-distance mode adds up to this ratio for a nearby following obstacle.
+  direct_cluster_distance_ratio: 0.08
+  # Direct-distance mode adds speed_px_per_second * this lead time to the jump distance.
+  direct_speed_seconds: 0.20
   cactus_size_ttc_reduction: 0.35
   cactus_reference_height_ratio: 0.20
   cactus_reference_width_ratio: 0.12

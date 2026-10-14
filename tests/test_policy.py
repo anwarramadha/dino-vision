@@ -6,6 +6,7 @@ SETTINGS = {
     "jump_ttc_seconds": 0.35,
     "duck_ttc_seconds": 0.28,
     "emergency_distance_ratio": 0.06,
+    "high_bird_ratio": 0.30,
     "low_bird_ratio": 0.45,
     "cactus_size_ttc_reduction": 0.30,
     "cactus_reference_height_ratio": 0.20,
@@ -57,12 +58,71 @@ def test_handled_track_does_not_trigger_again() -> None:
     assert choose(policy, [cactus(40)], 0.5, 0.55) is None
 
 
-def test_low_bird_ducks() -> None:
+def test_middle_bird_ducks() -> None:
+    policy = ObstaclePolicy(SETTINGS)
+    bird = Detection("bird", 0.9, 500, 150, 550, 250)
+    assert choose(policy, [bird], 0.0, 0.0) is None
+    action = choose(policy, [Detection("bird", 0.9, 250, 150, 300, 250)], 0.2, 0.25)
+    assert action and action.name == "duck"
+
+
+def test_low_bird_jumps() -> None:
     policy = ObstaclePolicy(SETTINGS)
     bird = Detection("bird", 0.9, 500, 250, 550, 350)
     assert choose(policy, [bird], 0.0, 0.0) is None
     action = choose(policy, [Detection("bird", 0.9, 250, 250, 300, 350)], 0.2, 0.25)
-    assert action and action.name == "duck"
+    assert action and action.name == "jump"
+
+
+def test_high_bird_is_ignored() -> None:
+    policy = ObstaclePolicy(SETTINGS)
+    high_bird = Detection("bird", 0.9, 100, 20, 150, 100)
+    assert choose(policy, [high_bird], 0.0, 0.0) is None
+    assert choose(policy, [high_bird], 0.2, 0.2) is None
+    assert not policy.tracks
+
+
+def test_direct_distance_uses_current_distance_and_handles_a_track_once() -> None:
+    settings = SETTINGS | {"decision_mode": "direct_distance", "direct_distance_ratio": 0.30}
+    policy = ObstaclePolicy(settings)
+    assert choose(policy, [cactus(343)], 0.0, 0.0) is None
+    action = choose(policy, [cactus(342)], 0.1, 0.1)
+    assert action and action.name == "jump"
+    assert action.track_id == 1
+    assert len(policy.tracks) == 1
+    assert policy.trigger_reason == "direct-distance"
+    policy.mark_action_sent(action.track_id)
+    assert choose(policy, [cactus(250)], 0.2, 0.2) is None
+    policy.reset()
+    assert choose(policy, [cactus(342)], 0.3, 0.3)
+
+
+def test_direct_distance_increases_threshold_for_a_close_follower() -> None:
+    settings = SETTINGS | {
+        "decision_mode": "direct_distance",
+        "direct_distance_ratio": 0.15,
+        "direct_cluster_distance_ratio": 0.08,
+    }
+    policy = ObstaclePolicy(settings)
+    assert choose(policy, [cactus(200)], 0.0, 0.0) is None
+    action = choose(policy, [cactus(200), cactus(220)], 0.1, 0.1)
+    assert action and action.name == "jump"
+    assert policy.clustered is True
+    assert policy.ttc_limit_seconds > 1140 * 0.15
+
+
+def test_direct_distance_increases_threshold_for_a_faster_obstacle() -> None:
+    settings = SETTINGS | {
+        "decision_mode": "direct_distance",
+        "direct_distance_ratio": 0.10,
+        "direct_speed_seconds": 0.20,
+    }
+    policy = ObstaclePolicy(settings)
+    assert choose(policy, [cactus(500)], 0.0, 0.0) is None
+    action = choose(policy, [cactus(330)], 0.17, 0.17)
+    assert action and action.name == "jump"
+    assert abs(policy.speed_px_s - 1000) < 0.01
+    assert policy.ttc_limit_seconds > 1140 * 0.10
 
 
 def test_track_is_removed_after_consecutive_missed_frames() -> None:

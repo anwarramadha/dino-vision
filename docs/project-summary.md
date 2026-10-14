@@ -211,17 +211,27 @@ Use `--save-interval` to save annotated previews. The preview includes bounding 
 
 ## Current Bottleneck
 
-The main bottleneck is Chrome CDP screenshot capture, not the action policy.
+### Native Windows dengan DXCam
 
-Measured steady-state values after JPEG optimization:
+Pengukuran pada Python 3.12 native Windows memakai `scripts/run_agent_windows.py`, DXCam (Desktop Duplication API), ROI `2280x520`, dan 100 frame setelah pemanasan 10 frame menghasilkan:
 
 ```text
-CDP capture: approximately 116-161ms
-PyTorch inference: approximately 17-42ms in steady state
-CDP input: approximately 5ms
+                         capture average/p95     inference average/p95
+PyTorch .pt:            6.4ms / 9.2ms            42.7ms / 50.0ms
+OpenVINO CPU:           6.2ms / 7.8ms            14.8ms / 16.3ms
 ```
 
-Capture latency is significant because Chrome must render and encode a full tab screenshot before the ROI is cropped locally. At obstacle speeds near `1000px/s`, a `120ms` capture delay alone represents roughly `120px` of obstacle movement.
+OpenVINO adalah runtime yang direkomendasikan pada Windows ini karena mempercepat inferensi sekitar `2.9x` dibanding model PyTorch. Inferensi tetap menjadi bottleneck utama, tetapi capture hanya menyumbang sekitar 30% dari gabungan waktu capture dan inferensi OpenVINO. Pada kecepatan rintangan `1000px/s`, capture DXCam rata-rata mewakili sekitar `6px` pergerakan rintangan, jauh lebih kecil daripada capture CDP sebelumnya.
+
+Ukur ulang pada mesin atau konfigurasi lain tanpa mengirim input keyboard:
+
+```powershell
+python scripts/run_agent_windows.py --benchmark-frames 100
+```
+
+### Baseline WSL melalui CDP
+
+Baseline WSL/CDP setelah optimasi JPEG mencatat capture sekitar `116-161ms`, inferensi PyTorch `17-42ms`, dan input CDP sekitar `5ms`. Pada jalur tersebut, Chrome perlu merender serta mengenkode screenshot tab penuh sebelum ROI dipotong lokal, sehingga capture menjadi bottleneck. Hasil ini tidak mewakili backend DXCam Windows.
 
 ## OpenVINO Result
 
@@ -231,20 +241,28 @@ OpenVINO was exported from the active YOLOv8 model:
 yolo export model=models/dino-yolo.pt format=openvino imgsz=416
 ```
 
-An earlier OpenVINO artifact was exported at `320x320` and returned zero detections. Re-exporting at `416x416` fixed detection parity with the PyTorch model.
-
-However, OpenVINO was slower in this environment:
+The current artifact is stored at:
 
 ```text
-PyTorch .pt:            average 25ms, p95 36ms, max 42ms
-OpenVINO CPU:           average 47ms, p95 64ms, max 76ms
+models/dino-yolo_openvino_model
 ```
 
-For this project, `models/dino-yolo.pt` is therefore the active runtime model.
+Native Windows CPU benchmark at `416x416` shows OpenVINO is faster than PyTorch:
+
+```text
+PyTorch .pt:            average 42.7ms, p95 50.0ms
+OpenVINO CPU:           average 14.8ms, p95 16.3ms
+```
+
+Run the Windows agent with OpenVINO explicitly:
+
+```powershell
+python scripts/run_agent_windows.py --model-path models/dino-yolo_openvino_model --start-game
+```
 
 ## Why OpenVINO Was Slower
 
-OpenVINO is not guaranteed to outperform PyTorch for a small single-frame model:
+The earlier WSL result was slower because OpenVINO is not guaranteed to outperform PyTorch for a small single-frame model:
 
 - YOLOv8 nano is small enough that OpenVINO runtime and conversion overhead matter.
 - PyTorch already uses optimized CPU kernels effectively for this model.
@@ -258,7 +276,7 @@ The available OpenVINO devices are:
 ['CPU']
 ```
 
-Running native Windows Python with the Intel GPU plugin may provide a different result, but it has not been tested in this project.
+Native Windows Python changes that result: OpenVINO CPU is now materially faster on this machine. Intel GPU and NPU were not benchmarked.
 
 ## Recommended Commands
 
