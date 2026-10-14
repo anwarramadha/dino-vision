@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+.env
+
+config/settings.yaml
+models/*.pt
+!models/README.md
+!models/.gitkeep
+data/raw/
+data/labeled/
+data/*.zip
+runs/
+assets/screenshots/*.png
+!assets/screenshots/.gitkeep

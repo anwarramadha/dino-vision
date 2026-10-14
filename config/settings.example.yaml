@@ -1,0 +1,42 @@
+capture:
+  # "auto" uses CDP on WSL and mss elsewhere. CDP needs Chrome remote debugging.
+  backend: auto
+  cdp_url: http://127.0.0.1:9222
+  image_format: jpeg
+  jpeg_quality: 80
+  optimize_for_speed: true
+  monitor: 1
+  # Crop the game lane ahead of Dino to prevent it from being detected as an obstacle.
+  # Calibrate coordinates using scripts/capture_frame.py for your Chrome viewport.
+  region: {left: 300, top: 380, width: 1620, height: 300}
+
+control:
+  # "auto" uses pyautogui on WSL, ydotool on native Wayland, and pyautogui elsewhere.
+  # Use "cdp" to control a Chrome tab started with --remote-debugging-port=9222.
+  backend: auto
+  cdp_url: http://127.0.0.1:9222
+  startup_delay_seconds: 3
+  duck_duration_seconds: 0.25
+
+detector:
+  model_path: models/dino-yolo.pt
+  confidence: 0.45
+  image_size: 416
+  inference_threads: 4
+  classes: [cactus, bird]
+
+policy:
+  jump_ttc_seconds: 0.32
+  duck_ttc_seconds: 0.28
+  emergency_distance_ratio: 0.06
+  low_bird_ratio: 0.45
+  cactus_size_ttc_reduction: 0.35
+  cactus_reference_height_ratio: 0.20
+  cactus_reference_width_ratio: 0.12
+  obstacle_cluster_gap_ratio: 0.25
+  cluster_ttc_bonus_seconds: 0.12
+  history_size: 4
+  input_latency_seconds: 0.03
+  track_max_missed_frames: 3
+  track_min_match_distance_px: 90
+  action_cooldown_seconds: 0.20
